@@ -29,12 +29,12 @@ func NewRateLimiter(r *redis.Client, key string, limit int64, timeSlice time.Dur
 	}
 }
 
-// ApplyRateLimit executes Run function for the type
+// ApplyRateLimit executes run function for the type
 func ApplyRateLimit(r RateLimit) error {
 	return r.run()
 }
 
-// Run runs the ratelimiter
+// run runs the ratelimiter
 func (rate RateLimiter) run() error {
 	incr = func(key string) error {
 		err := rate.redis.Watch(func(tx *redis.Tx) error {
