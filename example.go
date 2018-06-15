@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
+	"github.com/go-redis/redis"
 	rl "github.com/squeakysimple/ratelimit/ratelimit"
 )
 
@@ -12,31 +15,41 @@ var (
 	database        = 0
 	keyPrefix       = "squeakysimple"
 	limit     int64 = 10
+	timeSlice       = 1 * time.Second
 	per             = "second"
 	mutex           = &sync.Mutex{}
 )
 
 var wg sync.WaitGroup
 
-func main() {
-	options := &rl.ConnectionOptions{
+// NewRedisClient returns a redis client with supplied option
+func NewRedisClient() (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
 		Addr:     address,
 		Password: password,
 		DB:       database,
-	}
-
-	rateLimit := rl.NewRateLimiter(options, keyPrefix, limit, per)
-	client, err := rateLimit.NewRateLimiterClient()
+	})
+	_, err := client.Ping().Result()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
+	return client, nil
+}
+
+func main() {
+	client, redisErr := NewRedisClient()
+	if redisErr != nil {
+		panic(redisErr)
+	}
 	defer func() {
-		err = client.CloseRateLimiterClient()
+		err := client.Close()
 		if err != nil {
 			panic(err)
 		}
 	}()
+
+	rateLimiter := rl.NewRateLimiter(client, keyPrefix, limit, timeSlice, per)
 
 	//u := time.Now()
 	//v := time.Now().Add(time.Second)
@@ -45,9 +58,9 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := rateLimit.Run(client)
+			err := rl.ApplyRateLimit(rateLimiter)
 			if err != nil {
-				panic(err)
+				fmt.Println(err)
 			}
 		}()
 		//u = time.Now()

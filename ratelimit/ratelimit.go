@@ -2,95 +2,42 @@ package ratelimit
 
 import (
 	"errors"
-	"math"
-	"strconv"
-	"sync"
 	"time"
 
 	"github.com/go-redis/redis"
 )
 
 var (
-	mutex = &sync.Mutex{}
-	incr  func(string) error // incr is a thread-safe function to get-and-set value for the key
+	incr func(string) error // incr is a thread-safe function to get-and-set value for the key
 )
 
 // Custom error messages
 var (
-	errServerBusy      = errors.New("server is busy processing other requests, please try again later")
+	//errServerBusy      = errors.New("server is busy processing other requests, please try again later")
 	errTooManyRequests = errors.New("you are sending too many requests, please slow down")
-	errPer             = errors.New("valid value of 'Per' are 'second', 'minute' and 'hour'")
+	//errPer             = errors.New("valid value of 'Per' are 'second', 'minute' and 'hour'")
 )
 
 // NewRateLimiter returns a new rate limiter
-func NewRateLimiter(c *ConnectionOptions, keyPrefix string, limit int64, per string) *RateLimiter {
-	return &RateLimiter{
-		ConnectOpt: c,
-		KeyPrefix:  keyPrefix,
-		Limit:      limit,
-		//TimeSlice:  timeSlice,
-		Per: per,
+func NewRateLimiter(r *redis.Client, key string, limit int64, timeSlice time.Duration, per string) RateLimiter {
+	return RateLimiter{
+		redis:     r,
+		key:       key,
+		limit:     limit,
+		timeSlice: timeSlice,
+		per:       per,
 	}
 }
 
-// NewRateLimiterClient creates a new redis client, use this client across threads and dont close it for every call
-func (r *RateLimiter) NewRateLimiterClient() (*RateLimitClient, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     r.ConnectOpt.Addr,
-		Password: r.ConnectOpt.Password,
-		DB:       r.ConnectOpt.DB,
-	})
-	_, err := client.Ping().Result()
-	if err != nil {
-		return nil, err
-	}
-	cli := RateLimitClient{RedisCli: client}
-
-	return &cli, nil
-}
-
-// CloseRateLimiterClient closes the client, releasing any open resources.
-func (client *RateLimitClient) CloseRateLimiterClient() error {
-	err := client.RedisCli.Close()
-	if err != nil {
-		return err
-	}
-
-	return nil
+// ApplyRateLimit executes Run function for the type
+func ApplyRateLimit(r RateLimit) error {
+	return r.run()
 }
 
 // Run runs the ratelimiter
-func (r *RateLimiter) Run(client *RateLimitClient) error {
-	var ts int
-	var dur float64
-
-	switch r.Per {
-	case "second":
-		ts = time.Now().Second()
-	case "minute":
-		ts = time.Now().Minute()
-	case "hour":
-		ts = time.Now().Hour()
-	default:
-		return errPer
-	}
-
-	// Key is a combination of actual key and second/minute/hour number
-	key := r.KeyPrefix + ":" + strconv.Itoa(ts)
-
+func (rate RateLimiter) run() error {
 	incr = func(key string) error {
-		switch r.Per {
-		case "second":
-			dur = math.Abs(float64(time.Now().Second() - ts))
-		case "minute":
-			dur = math.Abs(float64(time.Now().Minute() - ts))
-		case "hour":
-			dur = math.Abs(float64(time.Now().Hour() - ts))
-		}
-		if dur > 0 {
-			return errServerBusy
-		}
-		err := client.RedisCli.Watch(func(tx *redis.Tx) error {
+		err := rate.redis.Watch(func(tx *redis.Tx) error {
 			defer func() {
 				tx.Close()
 			}()
@@ -99,20 +46,19 @@ func (r *RateLimiter) Run(client *RateLimitClient) error {
 				return err
 			}
 
-			if err == nil && n >= r.Limit {
+			if err == nil && n >= rate.limit {
 				return errTooManyRequests
 			}
 
 			_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Incr(key)
-				switch r.Per {
+				switch rate.per {
 				case "second":
-					//pipe.Expire(key, r.TimeSlice*time.Second)
-					pipe.Expire(key, time.Second)
+					pipe.Expire(key, rate.timeSlice*time.Second)
 				case "minute":
-					pipe.Expire(key, time.Minute)
+					pipe.Expire(key, rate.timeSlice*time.Minute)
 				case "hour":
-					pipe.Expire(key, time.Hour)
+					pipe.Expire(key, rate.timeSlice*time.Hour)
 				}
 
 				_, err = pipe.Exec()
@@ -122,11 +68,12 @@ func (r *RateLimiter) Run(client *RateLimitClient) error {
 		}, key)
 
 		if err == redis.TxFailedErr {
-			return incr(key)
+			return incr(rate.key)
 		}
 		return err
 	}
+
 	// actual execution starts here
-	err := incr(key)
+	err := incr(rate.key)
 	return err
 }
