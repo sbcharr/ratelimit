@@ -11,8 +11,8 @@ type RateLimit interface {
 	run() error
 }
 
-// RateLimiter holds various config parameters of the limiter
-type RateLimiter struct {
+// RedisRateLimiter holds various config parameters of the limiter
+type RedisRateLimiter struct {
 	// A redis client based on go-redis/redis
 	redis *redis.Client
 

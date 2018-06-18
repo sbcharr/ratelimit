@@ -19,8 +19,8 @@ var (
 )
 
 // NewRateLimiter returns a new rate limiter
-func NewRateLimiter(r *redis.Client, key string, limit int64, timeSlice time.Duration, per string) RateLimiter {
-	return RateLimiter{
+func NewRateLimiter(r *redis.Client, key string, limit int64, timeSlice time.Duration, per string) *RedisRateLimiter {
+	return &RedisRateLimiter{
 		redis:     r,
 		key:       key,
 		limit:     limit,
@@ -35,9 +35,9 @@ func ApplyRateLimit(r RateLimit) error {
 }
 
 // run runs the ratelimiter
-func (rate RateLimiter) run() error {
+func (l *RedisRateLimiter) run() error {
 	incr = func(key string) error {
-		err := rate.redis.Watch(func(tx *redis.Tx) error {
+		err := l.redis.Watch(func(tx *redis.Tx) error {
 			defer func() {
 				tx.Close()
 			}()
@@ -46,19 +46,19 @@ func (rate RateLimiter) run() error {
 				return err
 			}
 
-			if err == nil && n >= rate.limit {
+			if err == nil && n >= l.limit {
 				return errTooManyRequests
 			}
 
 			_, err = tx.Pipelined(func(pipe redis.Pipeliner) error {
 				pipe.Incr(key)
-				switch rate.per {
+				switch l.per {
 				case "second":
-					pipe.Expire(key, rate.timeSlice*time.Second)
+					pipe.Expire(key, l.timeSlice*time.Second)
 				case "minute":
-					pipe.Expire(key, rate.timeSlice*time.Minute)
+					pipe.Expire(key, l.timeSlice*time.Minute)
 				case "hour":
-					pipe.Expire(key, rate.timeSlice*time.Hour)
+					pipe.Expire(key, l.timeSlice*time.Hour)
 				}
 
 				_, err = pipe.Exec()
@@ -68,12 +68,12 @@ func (rate RateLimiter) run() error {
 		}, key)
 
 		if err == redis.TxFailedErr {
-			return incr(rate.key)
+			return incr(l.key)
 		}
 		return err
 	}
 
 	// actual execution starts here
-	err := incr(rate.key)
+	err := incr(l.key)
 	return err
 }
